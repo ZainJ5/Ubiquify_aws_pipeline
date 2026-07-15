@@ -1,73 +1,49 @@
+# Predefined groups and their permission levels
+locals {
+  groups = {
+    admin      = { name = "Admin-Group", policy = "arn:aws:iam::aws:policy/AdministratorAccess" }
+    developers = { name = "Developer-Group", policy = "arn:aws:iam::aws:policy/PowerUserAccess" }
+    qa         = { name = "QA-Group", policy = "arn:aws:iam::aws:policy/ReadOnlyAccess" }
+  }
+
+  users_by_name = { for u in var.users : u.name => u }
+}
+
 # 1. Create the Groups
-resource "aws_iam_group" "admin" {
-  name = "Admin-Group"
-}
-
-resource "aws_iam_group" "developers" {
-  name = "Developer-Group"
-}
-
-resource "aws_iam_group" "qa" {
-  name = "QA-Group"
+resource "aws_iam_group" "groups" {
+  for_each = local.groups
+  name     = each.value.name
 }
 
 # 2. Attach Appropriate Permissions to Groups
-resource "aws_iam_group_policy_attachment" "admin_access" {
-  group      = aws_iam_group.admin.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
-}
-
-resource "aws_iam_group_policy_attachment" "developer_access" {
-  group      = aws_iam_group.developers.name
-  policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
-}
-
-resource "aws_iam_group_policy_attachment" "qa_access" {
-  group      = aws_iam_group.qa.name
-  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+resource "aws_iam_group_policy_attachment" "access" {
+  for_each   = local.groups
+  group      = aws_iam_group.groups[each.key].name
+  policy_arn = each.value.policy
 }
 
 # 3. Create the Users
-resource "aws_iam_user" "admin" {
-  name = "admin"
-}
-
-resource "aws_iam_user" "developer" {
-  name = "developer"
-}
-
-resource "aws_iam_user" "qa" {
-  name = "qa"
+resource "aws_iam_user" "users" {
+  for_each = local.users_by_name
+  name     = each.key
 }
 
 # 4. Add Users to their respective Groups
-resource "aws_iam_user_group_membership" "admin_membership" {
-  user   = aws_iam_user.admin.name
-  groups = [aws_iam_group.admin.name]
+resource "aws_iam_user_group_membership" "membership" {
+  for_each = local.users_by_name
+  user     = aws_iam_user.users[each.key].name
+  groups   = [aws_iam_group.groups[each.value.group].name]
 }
 
-resource "aws_iam_user_group_membership" "developer_membership" {
-  user   = aws_iam_user.developer.name
-  groups = [aws_iam_group.developers.name]
-}
-
-resource "aws_iam_user_group_membership" "qa_membership" {
-  user   = aws_iam_user.qa.name
-  groups = [aws_iam_group.qa.name]
-}
-
-# 5. Create temporary console passwords (must be reset on first login)
-resource "aws_iam_user_login_profile" "admin" {
-  user                    = aws_iam_user.admin.name
+# 5. Create temporary console passwords (must be reset on first login).
+# Users who chose a custom password get it applied by the web app right
+# after apply, replacing the generated one.
+resource "aws_iam_user_login_profile" "login" {
+  for_each                = local.users_by_name
+  user                    = aws_iam_user.users[each.key].name
   password_reset_required = true
-}
 
-resource "aws_iam_user_login_profile" "developer" {
-  user                    = aws_iam_user.developer.name
-  password_reset_required = true
-}
-
-resource "aws_iam_user_login_profile" "qa" {
-  user                    = aws_iam_user.qa.name
-  password_reset_required = true
+  lifecycle {
+    ignore_changes = [password_reset_required]
+  }
 }

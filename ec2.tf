@@ -1,10 +1,6 @@
-locals {
-  environments = ["staging", "production"]
-}
-
-# Create 2 servers using a loop
+# Create one server per selected environment
 resource "aws_instance" "app_servers" {
-  for_each = toset(local.environments)
+  for_each = var.create_ec2 ? toset(var.environments) : toset([])
 
   ami           = "ami-0b6d9d3d33ba97d99"
   instance_type = "t3.micro"
@@ -17,9 +13,9 @@ resource "aws_instance" "app_servers" {
   }
 }
 
-# Create an Elastic IP for each server and attach it
+# Optionally create an Elastic IP for each server and attach it
 resource "aws_eip" "app_eips" {
-  for_each = aws_instance.app_servers
+  for_each = { for env, server in aws_instance.app_servers : env => server if var.attach_eip }
 
   instance = each.value.id
   domain   = "vpc"
