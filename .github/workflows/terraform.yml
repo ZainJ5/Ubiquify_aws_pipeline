@@ -26,7 +26,8 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.8.0" 
+          terraform_version: "1.8.0"
+          terraform_wrapper: false
 
       - name: Terraform Init
         run: terraform init -input=false
@@ -41,3 +42,20 @@ jobs:
       - name: Terraform Apply
         if: github.ref == 'refs/heads/master' && github.event_name == 'push'
         run: terraform apply -auto-approve -input=false
+
+      - name: Get Onboarding Details
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        run: terraform output -raw onboarding_details > details.txt
+
+      - name: Send Email
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "AWS Environment Details"
+          to: ${{ secrets.NOTIFICATION_EMAIL }}
+          from: "Ubiquify Pipeline"
+          body: "file://details.txt"
