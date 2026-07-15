@@ -38,7 +38,7 @@ function log(job, line) {
   if (job.log.length > 5000) job.log.splice(0, job.log.length - 5000);
 }
 
-function runCommand(job, command, args, env) {
+function runCommand(job, command, args, env, { quiet = false } = {}) {
   return new Promise((resolve, reject) => {
     log(job, `$ ${command} ${args.join(" ")}`);
     const child = spawn(command, args, {
@@ -51,6 +51,7 @@ function runCommand(job, command, args, env) {
     const onData = (data, capture) => {
       const text = data.toString();
       if (capture) stdout += text;
+      if (quiet) return; // don't echo output that may contain credentials
       for (const line of text.split(/\r?\n/)) {
         if (line.trim()) log(job, line);
       }
@@ -125,7 +126,10 @@ async function runJob(job, payload) {
 
   // 4. Collect outputs
   job.phase = "reading outputs";
-  const outputJson = await runCommand(job, terraform, ["output", "-json", "-no-color"], awsEnv);
+  const outputJson = await runCommand(job, terraform, ["output", "-json", "-no-color"], awsEnv, {
+    quiet: true,
+  });
+  log(job, "Outputs collected (values hidden from log).");
   const outputs = JSON.parse(outputJson);
   const value = (name, fallback) => outputs[name]?.value ?? fallback;
 
@@ -174,7 +178,9 @@ async function runJob(job, payload) {
     emailError: null,
   };
 
-  // 6. Send the details email (same Gmail SMTP the CI pipeline uses)
+  // 6. Send the details email (same Gmail SMTP the CI pipeline uses).
+  // If the host blocks outbound SMTP, fall back to dispatching the
+  // GitHub Actions email workflow, which sends from a runner instead.
   if (payload.email?.send && payload.email?.to) {
     job.phase = "sending email";
     try {
@@ -182,8 +188,18 @@ async function runJob(job, payload) {
       result.emailSent = true;
       log(job, `Email sent to ${payload.email.to}`);
     } catch (err) {
-      result.emailError = String(err?.message ?? err);
-      log(job, `Email failed: ${result.emailError}`);
+      const smtpError = String(err?.message ?? err);
+      log(job, `Direct SMTP failed: ${smtpError}`);
+      try {
+        await dispatchEmailWorkflow(rootEnv, payload.email.to);
+        result.emailSent = true;
+        log(job, `Email queued via GitHub Actions for ${payload.email.to}`);
+      } catch (ghErr) {
+        result.emailError = `${smtpError}; GitHub Actions fallback: ${String(
+          ghErr?.message ?? ghErr
+        )}`;
+        log(job, `Email failed: ${result.emailError}`);
+      }
     }
   }
 
@@ -212,6 +228,31 @@ function buildDetailsText(result) {
   return lines.join("\n");
 }
 
+async function dispatchEmailWorkflow(rootEnv, to) {
+  const token = rootEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
+  if (!token) {
+    throw new Error(
+      "GITHUB_TOKEN not set in the root .env (needed to dispatch the email workflow)."
+    );
+  }
+  const repo = rootEnv.GITHUB_REPO || process.env.GITHUB_REPO || "ZainJ5/Ubiquify_aws_pipeline";
+  const res = await fetch(
+    `https://api.github.com/repos/${repo}/actions/workflows/email.yml/dispatches`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ref: "main", inputs: { to } }),
+    }
+  );
+  if (res.status !== 204) {
+    throw new Error(`GitHub API returned ${res.status}: ${await res.text()}`);
+  }
+}
+
 async function sendDetailsEmail(rootEnv, to, result) {
   const user = rootEnv.MAIL_USERNAME || process.env.MAIL_USERNAME;
   const pass = rootEnv.MAIL_PASSWORD || process.env.MAIL_PASSWORD;
@@ -222,6 +263,8 @@ async function sendDetailsEmail(rootEnv, to, result) {
     host: "smtp.gmail.com",
     port: 465,
     secure: true,
+    family: 4, // hosts without IPv6 routing resolve gmail to unreachable v6 addresses
+    connectionTimeout: 15000,
     auth: { user, pass },
   });
   await transporter.sendMail({

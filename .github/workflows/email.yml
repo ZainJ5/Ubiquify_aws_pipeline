@@ -1,0 +1,50 @@
+name: "Send Environment Details Email"
+
+# Email relay for the web app: the hosting server's outbound SMTP is blocked,
+# so it dispatches this workflow, which reads the details from Terraform state
+# and emails them from a GitHub runner.
+on:
+  workflow_dispatch:
+    inputs:
+      to:
+        description: "Recipient email address"
+        required: true
+        type: string
+
+jobs:
+  email:
+    name: "Email Environment Details"
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: "us-east-1"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8.0"
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Get Onboarding Details
+        run: terraform output -raw onboarding_details > details.txt
+
+      - name: Send Email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "AWS Environment Details"
+          to: ${{ inputs.to }}
+          from: "Ubiquify Pipeline"
+          body: "file://details.txt"
