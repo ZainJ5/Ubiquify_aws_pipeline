@@ -6,7 +6,6 @@ import { IAMClient, UpdateLoginProfileCommand } from "@aws-sdk/client-iam";
 import nodemailer from "nodemailer";
 import { TF_DIR, loadRootEnv } from "./env";
 
-// Survive Next.js dev-server hot reloads
 const jobs = globalThis.__ubiquifyJobs ?? (globalThis.__ubiquifyJobs = new Map());
 
 export function getJob(id) {
@@ -51,7 +50,7 @@ function runCommand(job, command, args, env, { quiet = false } = {}) {
     const onData = (data, capture) => {
       const text = data.toString();
       if (capture) stdout += text;
-      if (quiet) return; // don't echo output that may contain credentials
+      if (quiet) return; 
       for (const line of text.split(/\r?\n/)) {
         if (line.trim()) log(job, line);
       }
@@ -91,7 +90,6 @@ async function runJob(job, payload) {
     throw new Error("AWS credentials not found in the root .env file.");
   }
 
-  // 1. Write terraform.tfvars.json
   job.phase = "writing tfvars";
   const tfvars = {
     users: payload.users.map((u) => ({ name: u.name, group: u.group })),
@@ -109,13 +107,11 @@ async function runJob(job, payload) {
   );
   log(job, "Wrote terraform.tfvars.json");
 
-  // 2. terraform init (only when not initialized yet)
   if (!fs.existsSync(path.join(TF_DIR, ".terraform"))) {
     job.phase = "terraform init";
     await runCommand(job, terraform, ["init", "-input=false", "-no-color"], awsEnv);
   }
 
-  // 3. terraform apply
   job.phase = "terraform apply";
   await runCommand(
     job,
@@ -124,7 +120,6 @@ async function runJob(job, payload) {
     awsEnv
   );
 
-  // 4. Collect outputs
   job.phase = "reading outputs";
   const outputJson = await runCommand(job, terraform, ["output", "-json", "-no-color"], awsEnv, {
     quiet: true,
@@ -136,7 +131,7 @@ async function runJob(job, payload) {
   const credentials = value("user_credentials", {});
   const serverIps = value("server_ips", {});
 
-  // 5. Apply custom passwords chosen in the form
+  const passwordFailures = {};
   const customUsers = payload.users.filter((u) => u.passwordMode === "custom");
   if (customUsers.length > 0) {
     job.phase = "setting custom passwords";
@@ -148,24 +143,37 @@ async function runJob(job, payload) {
       },
     });
     for (const user of customUsers) {
-      await iam.send(
-        new UpdateLoginProfileCommand({
-          UserName: user.name,
-          Password: user.password,
-          PasswordResetRequired: false,
-        })
-      );
-      log(job, `Set custom password for user "${user.name}"`);
+      try {
+        await iam.send(
+          new UpdateLoginProfileCommand({
+            UserName: user.name,
+            Password: user.password,
+            PasswordResetRequired: false,
+          })
+        );
+        log(job, `Set custom password for user "${user.name}"`);
+      } catch (err) {
+        // A policy rejection must not fail the job — the infrastructure is
+        // already created. Keep the temporary password and report the reason.
+        passwordFailures[user.name] = String(err?.message ?? err);
+        log(
+          job,
+          `Could not set custom password for "${user.name}": ${passwordFailures[user.name]} — keeping the temporary password.`
+        );
+      }
     }
   }
 
-  const users = payload.users.map((u) => ({
-    name: u.name,
-    group: u.group,
-    passwordMode: u.passwordMode,
-    // custom passwords are never echoed back or emailed
-    password: u.passwordMode === "custom" ? null : credentials[u.name] ?? null,
-  }));
+  const users = payload.users.map((u) => {
+    const usedCustom = u.passwordMode === "custom" && !passwordFailures[u.name];
+    return {
+      name: u.name,
+      group: u.group,
+      passwordMode: usedCustom ? "custom" : "temporary",
+      password: usedCustom ? null : credentials[u.name] ?? null,
+      passwordError: passwordFailures[u.name] ?? null,
+    };
+  });
 
   const result = {
     consoleSigninUrl: value("console_signin_url", null),
@@ -178,9 +186,6 @@ async function runJob(job, payload) {
     emailError: null,
   };
 
-  // 6. Send the details email (same Gmail SMTP the CI pipeline uses).
-  // If the host blocks outbound SMTP, fall back to dispatching the
-  // GitHub Actions email workflow, which sends from a runner instead.
   if (payload.email?.send && payload.email?.to) {
     job.phase = "sending email";
     try {
@@ -263,7 +268,7 @@ async function sendDetailsEmail(rootEnv, to, result) {
     host: "smtp.gmail.com",
     port: 465,
     secure: true,
-    family: 4, // hosts without IPv6 routing resolve gmail to unreachable v6 addresses
+    family: 4, 
     connectionTimeout: 15000,
     auth: { user, pass },
   });

@@ -23,8 +23,18 @@ function validate(payload) {
     if (!GROUPS.includes(u.group)) return `Invalid group for "${u.name}".`;
     if (!["temporary", "custom"].includes(u.passwordMode))
       return `Invalid password mode for "${u.name}".`;
-    if (u.passwordMode === "custom" && (typeof u.password !== "string" || u.password.length < 8))
-      return `Custom password for "${u.name}" must be at least 8 characters.`;
+    if (u.passwordMode === "custom") {
+      const pw = u.password;
+      if (
+        typeof pw !== "string" ||
+        pw.length < 8 ||
+        !/[A-Z]/.test(pw) ||
+        !/[a-z]/.test(pw) ||
+        !/[0-9]/.test(pw) ||
+        !/[^A-Za-z0-9]/.test(pw)
+      )
+        return `Custom password for "${u.name}" must be 8+ characters and include an uppercase letter, a lowercase letter, a number, and a symbol (AWS password policy).`;
+    }
   }
 
   const services = payload.services;
